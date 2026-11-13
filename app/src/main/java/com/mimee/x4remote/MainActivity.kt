@@ -26,6 +26,10 @@ class MainActivity : Activity() {
     private lateinit var ble: BleClient
     private lateinit var dot: View
     private lateinit var statusTv: TextView
+    private lateinit var discBtn: TextView
+    private lateinit var listCard: LinearLayout
+    private lateinit var listBody: LinearLayout
+    private var connected = false
     private var toast: Toast? = null
     private var ready = false
     private var asked = false
@@ -41,7 +45,11 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        ble = BleClient(this) { st, text -> runOnUiThread { onBleState(st, text) } }
+        ble = BleClient(
+            this,
+            { st, text -> runOnUiThread { onBleState(st, text) } },
+            { list, hidden -> runOnUiThread { renderList(list, hidden) } }
+        )
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -54,7 +62,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             background = card(Color.WHITE, 22)
             setPadding(dp(16), dp(12), dp(16), dp(12))
-            setOnClickListener { ble.restart() }
+            setOnClickListener { ble.rescan() }
         }
         val devIcon = View(this).apply {
             background = GradientDrawable().apply {
@@ -98,6 +106,36 @@ class MainActivity : Activity() {
         root.addView(header, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
+        // ---- ปุ่มสแกน / ตัดการเชื่อมต่อ ----
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val scanBtn = pill("สแกนหาเครื่อง", 0xFFFFD6E0.toInt()) { ble.rescan() }
+        discBtn = pill("ตัดการเชื่อมต่อ", 0xFFEDEAF6.toInt()) { ble.disconnect() }
+        discBtn.visibility = View.GONE
+        btnRow.addView(scanBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        btnRow.addView(discBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            leftMargin = dp(10)
+        })
+        root.addView(btnRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+
+        // ---- รายการอุปกรณ์ที่สแกนเจอ ----
+        listCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = card(Color.WHITE, 22)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            visibility = View.GONE
+        }
+        listCard.addView(TextView(this).apply {
+            text = "อุปกรณ์ที่พบ — แตะเพื่อเชื่อมต่อ"
+            textSize = 13f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFF6A6A78.toInt())
+        })
+        listBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        listCard.addView(listBody)
+        root.addView(listCard, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+
         // ---- การ์ดรีโมท ----
         val sheet = BitmapFactory.decodeResource(
             resources, R.drawable.remote_sheet,
@@ -120,8 +158,77 @@ class MainActivity : Activity() {
         setContentView(scroll)
     }
 
+    private fun pill(label: String, fill: Int, onClick: () -> Unit) = TextView(this).apply {
+        text = label
+        textSize = 15f
+        gravity = Gravity.CENTER
+        setTypeface(typeface, Typeface.BOLD)
+        setTextColor(0xFF4A4A58.toInt())
+        background = GradientDrawable().apply { setColor(fill); cornerRadius = dp(22).toFloat() }
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        setOnClickListener { onClick() }
+    }
+
+    private fun renderList(list: List<Found>, hidden: Int) {
+        listBody.removeAllViews()
+        if (connected || (list.isEmpty() && hidden == 0)) { listCard.visibility = View.GONE; return }
+        listCard.visibility = View.VISIBLE
+        for (f in list) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(if (f.clover) 0xFFFFE9EF.toInt() else 0xFFF7F6FB.toInt())
+                    cornerRadius = dp(14).toFloat()
+                }
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setOnClickListener { ble.connectTo(f.address) }
+            }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(TextView(this).apply {
+                text = (if (f.clover) "★ " else "") + f.name.ifEmpty { "(ไม่มีชื่อ)" }
+                textSize = 15f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(0xFF2B2B35.toInt())
+            })
+            col.addView(TextView(this).apply {
+                text = "${f.address}  ·  ${f.rssi} dBm"
+                textSize = 12f
+                setTextColor(0xFF6A6A78.toInt())
+            })
+            row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(TextView(this).apply {
+                text = "เชื่อมต่อ"
+                textSize = 13f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(0xFFB0476A.toInt())
+            })
+            listBody.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        }
+        if (hidden > 0) {
+            listBody.addView(TextView(this).apply {
+                text = "ยังมีอุปกรณ์ที่ไม่มีชื่ออีก $hidden เครื่อง (ซ่อนไว้)"
+                textSize = 12f
+                setTextColor(0xFF8A8A98.toInt())
+                setPadding(0, dp(10), 0, 0)
+            })
+        }
+        if (list.none { it.clover }) {
+            listBody.addView(TextView(this).apply {
+                text = "ยังไม่เจอ Clover-X4 — ตรวจว่าที่เครื่องเปิด เพิ่มเติม > รีโมท BLE เป็น \"เปิด\" แล้ว"
+                textSize = 12f
+                setTextColor(0xFFB0476A.toInt())
+                setPadding(0, dp(10), 0, 0)
+            })
+        }
+    }
+
     private fun onBleState(st: BleClient.State, text: String) {
         ready = st == BleClient.State.READY
+        connected = st == BleClient.State.READY || st == BleClient.State.CONNECTING
+        discBtn.visibility = if (connected) View.VISIBLE else View.GONE
+        if (connected) listCard.visibility = View.GONE
         statusTv.text = text
         val c = when (st) {
             BleClient.State.READY -> 0xFF4CAF50.toInt()
